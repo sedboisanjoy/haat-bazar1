@@ -2,7 +2,7 @@
 
 > Everything below is copy-pasteable into Postman. All examples assume services are up via the gateway at **`http://localhost:8080`** (or hit the service ports directly if you prefer).
 > Make sure MySQL (`root`/`root`) is running, then start services in this order:
-> `eureka-server (8761)` → `auth-service (8081)` → `product-service (8082)` → `order-service (8084)` → `payment-service (8083)` → `api-gateway (8080)`.
+> `eureka-server (8761)` → `auth-service (8081)` → `product-service (8082)` → `order-service (8084)` → `payment-service (8083)` → `backup-service (8085)` → `api-gateway (8080)`.
 
 ---
 
@@ -17,6 +17,7 @@
 | `payment` | `http://localhost:8083` |
 | `token` | *(empty — filled by login response)* |
 | `userId` | *(empty — filled by auth helper)* |
+| `backup` | `http://localhost:8085` |
 
 In every secured request, add a header:
 ```
@@ -356,17 +357,75 @@ After calling 3.7, **3.9** should fail.
 
 ---
 
-## 5. Cleanup (optional)
+## 5. backup-service  (port 8085, gateway `/api/backup/**`)
 
-### 5.1 Delete category
+> All endpoints require `Authorization: Bearer {{token}}` with role `ADMIN`.
+> Listing backups also accepts `SELLER`.
+> `mysqldump` must be installed on the server (`sudo apt install mysql-client`).
+> Files are saved to `/tmp/haat-bazar-backups/` as `backup_yyyyMMdd_HHmmss.sql.gz`.
+> Auto-schedule runs every day at **2:00 AM** (configurable via `backup.schedule` property).
+
+### 5.1 Trigger a manual backup (ADMIN)
+**`POST`** `{{gw}}/api/backup/trigger`
+
+No request body needed.
+
+**Expected 201** (SUCCESS):
+```json
+{
+  "id": 1,
+  "filename": "backup_20260727_020000.sql.gz",
+  "databases": "auth_db,product_db,order_db,payment_db",
+  "fileSizeBytes": 14823,
+  "status": "SUCCESS",
+  "errorMessage": null,
+  "createdAt": "2026-07-27T02:00:00"
+}
+```
+**Expected 500** (if mysqldump is missing or DB unreachable):
+```json
+{ "status": "FAILED", "errorMessage": "mysqldump exited with code 1: ..." }
+```
+Save `id` as `backupId`.
+
+### 5.2 List all backups (ADMIN / SELLER)
+**`GET`** `{{gw}}/api/backup`
+
+Returns array of `BackupRecord`, newest first.
+
+### 5.3 Download a backup file (ADMIN)
+**`GET`** `{{gw}}/api/backup/{{backupId}}/download`
+
+Response is a binary `.sql.gz` file (`Content-Type: application/octet-stream`).
+In Postman → click **Send and Download** to save the file.
+
+### 5.4 Delete a backup (ADMIN)
+**`DELETE`** `{{gw}}/api/backup/{{backupId}}`
+
+**Expected 204 No Content.**
+Deletes both the DB record and the `.sql.gz` file from disk.
+
+### 5.5 Negative — trigger as SELLER
+Login as SELLER, call **5.1**.
+**Expected:** 403 Forbidden.
+
+### 5.6 Negative — download a FAILED backup
+Call **5.3** with the id of a FAILED record.
+**Expected:** 400 Bad Request.
+
+---
+
+## 6. Cleanup (optional)
+
+### 6.1 Delete category
 **`DELETE`** `{{gw}}/api/categories/{{categoryId}}`
 
-### 5.2 Delete product
+### 6.2 Delete product
 **`DELETE`** `{{gw}}/api/products/{{productId}}`
 
 ---
 
-## 6. Quick "happy path" run-through
+## 7. Quick "happy path" run-through
 
 1. Register SELLER (1.1) → set `{{token}}`.
 2. Create category (2.1) → set `{{categoryId}}`.
@@ -380,7 +439,7 @@ After calling 3.7, **3.9** should fail.
 
 ---
 
-## 7. Status codes cheat-sheet
+## 8. Status codes cheat-sheet
 
 | Service | Success | Common errors |
 |---|---|---|
@@ -388,3 +447,4 @@ After calling 3.7, **3.9** should fail.
 | product | 200/201 | 403 wrong role, 404 unknown id, 400 validation |
 | order | 200/201 | 404 unknown cart/order, 409 empty cart |
 | payment | 200 | 400 unknown method, 404 unknown order |
+| backup | 201 trigger / 200 list / 204 delete | 400 failed backup download, 403 wrong role, 404 unknown id, 500 mysqldump error |

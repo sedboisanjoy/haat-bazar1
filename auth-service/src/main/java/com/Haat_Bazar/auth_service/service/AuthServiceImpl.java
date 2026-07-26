@@ -58,7 +58,7 @@ public class AuthServiceImpl implements AuthService{
                 .orElseThrow(() ->
                         new RuntimeException("User not found"));
 
-        if (!user.getIsActive()) {
+        if (!Boolean.TRUE.equals(user.getIsActive())) {
             throw new RuntimeException("Account is deactivated");
         }
 

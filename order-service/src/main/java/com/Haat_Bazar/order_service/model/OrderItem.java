@@ -20,6 +20,9 @@ public class OrderItem {
     @Column(name = "product_id", nullable = false)
     private Long productId;
 
+    @Column(name = "seller_email")
+    private String sellerEmail;
+
     @Column(nullable = false)
     private Integer quantity;
 

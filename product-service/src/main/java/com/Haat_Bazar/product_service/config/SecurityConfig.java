@@ -28,30 +28,33 @@ public class SecurityConfig {
                 )
                 .authorizeHttpRequests(auth -> auth
 
-                        // ---- Product Endpoints ----
-                        // Everyone logged in can VIEW products
+                        // Internal endpoint called by order-service (no user token)
+                        .requestMatchers(HttpMethod.GET, "/api/products/*/seller-info").permitAll()
+
+                        // Everyone logged in can VIEW products and their own list
                         .requestMatchers(HttpMethod.GET, "/api/products/**").authenticated()
 
-                        // Only SELLER and ADMIN can CREATE/UPDATE/DELETE products
-                        .requestMatchers(HttpMethod.POST, "/api/products/**").hasAnyRole("SELLER", "ADMIN")
-                        .requestMatchers(HttpMethod.PUT, "/api/products/**").hasAnyRole("SELLER", "ADMIN")
-                        .requestMatchers(HttpMethod.DELETE, "/api/products/**").hasAnyRole("SELLER", "ADMIN")
+                        // Only SELLER can create/update/delete products (not ADMIN)
+                        .requestMatchers(HttpMethod.POST, "/api/products/**").hasRole("SELLER")
+                        .requestMatchers(HttpMethod.PUT, "/api/products/**").hasRole("SELLER")
+                        .requestMatchers(HttpMethod.DELETE, "/api/products/**").hasRole("SELLER")
 
-                        // ---- Category Endpoints ----
                         // Everyone logged in can VIEW categories
                         .requestMatchers(HttpMethod.GET, "/api/categories/**").authenticated()
 
-                        // Only SELLER and ADMIN can manage categories
-                        .requestMatchers(HttpMethod.POST, "/api/categories/**").hasAnyRole("SELLER", "ADMIN")
-                        .requestMatchers(HttpMethod.PUT, "/api/categories/**").hasAnyRole("SELLER", "ADMIN")
-                        .requestMatchers(HttpMethod.DELETE, "/api/categories/**").hasAnyRole("SELLER", "ADMIN")
+                        // Only SELLER can manage categories (not ADMIN)
+                        .requestMatchers(HttpMethod.POST, "/api/categories/**").hasRole("SELLER")
+                        .requestMatchers(HttpMethod.PUT, "/api/categories/**").hasRole("SELLER")
+                        .requestMatchers(HttpMethod.DELETE, "/api/categories/**").hasRole("SELLER")
 
-                        // ---- Inventory Endpoints ----
-                        // Everyone logged in can CHECK availability
-                        .requestMatchers(HttpMethod.GET, "/api/inventory/**").authenticated()
+                        // Inventory endpoints — called internally by order-service
+                        .requestMatchers(HttpMethod.GET, "/api/inventory/**").permitAll()
+                        .requestMatchers(HttpMethod.PUT, "/api/inventory/*/reduce").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/api/inventory/check-stock").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/api/inventory/reduce").permitAll()
 
-                        // Only SELLER and ADMIN can UPDATE stock
-                        .requestMatchers(HttpMethod.PUT, "/api/inventory/**").hasAnyRole("SELLER", "ADMIN")
+                        // Only SELLER can manually set stock levels
+                        .requestMatchers(HttpMethod.PUT, "/api/inventory/**").hasRole("SELLER")
 
                         .anyRequest().authenticated()
                 );

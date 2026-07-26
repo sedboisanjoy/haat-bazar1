@@ -3,9 +3,11 @@ package com.Haat_Bazar.order_service.service;
 import com.Haat_Bazar.order_service.dto.CheckoutRequest;
 import com.Haat_Bazar.order_service.dto.OrderItemResponse;
 import com.Haat_Bazar.order_service.dto.OrderResponse;
+import com.Haat_Bazar.order_service.dto.SellerSalesResponse;
 import com.Haat_Bazar.order_service.exception.InsufficientStockException;
 import com.Haat_Bazar.order_service.exception.ResourceNotFoundException;
 import com.Haat_Bazar.order_service.model.*;
+import com.Haat_Bazar.order_service.repository.OrderItemRepository;
 import com.Haat_Bazar.order_service.repository.OrderRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -14,9 +16,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.client.RestTemplate;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -25,12 +25,10 @@ import java.util.stream.Collectors;
 public class OrderService {
 
     private final OrderRepository orderRepository;
+    private final OrderItemRepository orderItemRepository;
     private final CartService cartService;
     private final RestTemplate restTemplate;
 
-    // Sajib's inventory-service at port 8082
-    // GET  /api/inventory/{productId}                   → check stock
-    // PUT  /api/inventory/{productId}/reduce?quantity=N → deduct stock
     @Value("${inventory.service.url:http://localhost:8082}")
     private String inventoryServiceUrl;
 
@@ -38,22 +36,16 @@ public class OrderService {
     public OrderResponse checkout(Long userId, CheckoutRequest checkoutRequest) {
         log.info("Starting checkout process for user: {}", userId);
 
-        // 1. Get Cart
         Cart cart = cartService.getCart(userId);
 
-        // 2. Validate Cart
         if (cart.getItems() == null || cart.getItems().isEmpty()) {
             throw new InsufficientStockException("Cannot checkout: Cart is empty");
         }
 
-        // 3. Check stock via Sajib's inventory-service
         checkInventoryStock(cart.getItems());
 
-        // 4. Calculate Total
         Double total = cart.getCartTotal();
-        log.info("Calculated total for order: {}", total);
 
-        // 5. Create Order (with status PENDING)
         Order order = Order.builder()
                 .userId(userId)
                 .totalAmount(total)
@@ -61,10 +53,10 @@ public class OrderService {
                 .items(new ArrayList<>())
                 .build();
 
-        // 6. Save Order Items
         List<OrderItem> orderItems = cart.getItems().stream()
                 .map(cartItem -> OrderItem.builder()
                         .productId(cartItem.getProductId())
+                        .sellerEmail(fetchSellerEmail(cartItem.getProductId()))
                         .quantity(cartItem.getQuantity())
                         .price(cartItem.getPrice())
                         .order(order)
@@ -73,19 +65,12 @@ public class OrderService {
 
         order.setItems(orderItems);
         Order savedOrder = orderRepository.save(order);
-        log.info("Order created in PENDING status with ID: {}", savedOrder.getId());
 
-        // 7. Deduct stock via Sajib's inventory-service
         deductInventoryStock(cart.getItems());
-
-        // 8. Clear Cart
         cartService.clearCart(userId);
-        log.info("Cleared shopping cart for user: {}", userId);
 
-        // 8. Finalize Order (status CONFIRMED)
         savedOrder.setStatus(OrderStatus.CONFIRMED);
         Order finalizedOrder = orderRepository.save(savedOrder);
-        log.info("Order status updated to CONFIRMED for ID: {}", finalizedOrder.getId());
 
         return mapToOrderResponse(finalizedOrder);
     }
@@ -109,28 +94,65 @@ public class OrderService {
         Order order = orderRepository.findById(orderId)
                 .orElseThrow(() -> new ResourceNotFoundException("Order not found with ID: " + orderId));
         order.setStatus(status);
-        Order updated = orderRepository.save(order);
-        log.info("Order status updated to {} for ID: {}", status, orderId);
-        return mapToOrderResponse(updated);
+        return mapToOrderResponse(orderRepository.save(order));
     }
 
-    /**
-     * REQ-PAY-03: Called by the payment-service via Feign to finalize an order after payment.
-     * Sets the order status to CONFIRMED.
-     */
     @Transactional
     public void markPaid(Long orderId) {
         Order order = orderRepository.findById(orderId)
                 .orElseThrow(() -> new ResourceNotFoundException("Order not found with ID: " + orderId));
-        order.setStatus(OrderStatus.CONFIRMED);
+        order.setStatus(OrderStatus.PAID);
         orderRepository.save(order);
-        log.info("Order {} marked as paid (status → CONFIRMED)", orderId);
     }
 
-    /**
-     * Check stock by calling GET /api/inventory/{productId} on Sajib's inventory-service.
-     * Response is expected to contain a 'stock' (or 'availableQuantity') integer field.
-     */
+    @Transactional(readOnly = true)
+    public SellerSalesResponse getMySales(String sellerEmail) {
+        List<OrderItem> items = orderItemRepository.findBySellerEmail(sellerEmail);
+
+        double totalRevenue = items.stream()
+                .mapToDouble(i -> i.getPrice() * i.getQuantity())
+                .sum();
+
+        Set<Long> orderIds = items.stream()
+                .map(i -> i.getOrder().getId())
+                .collect(Collectors.toSet());
+
+        List<SellerSalesResponse.SaleRecord> sales = items.stream()
+                .map(i -> SellerSalesResponse.SaleRecord.builder()
+                        .orderId(i.getOrder().getId())
+                        .orderDate(i.getOrder().getCreatedAt())
+                        .productId(i.getProductId())
+                        .quantity(i.getQuantity())
+                        .unitPrice(i.getPrice())
+                        .lineTotal(i.getPrice() * i.getQuantity())
+                        .orderStatus(i.getOrder().getStatus().name())
+                        .build())
+                .sorted(Comparator.comparing(SellerSalesResponse.SaleRecord::getOrderDate,
+                        Comparator.nullsLast(Comparator.reverseOrder())))
+                .collect(Collectors.toList());
+
+        return SellerSalesResponse.builder()
+                .totalRevenue(totalRevenue)
+                .totalOrders(orderIds.size())
+                .sales(sales)
+                .build();
+    }
+
+    private String fetchSellerEmail(Long productId) {
+        try {
+            String url = inventoryServiceUrl + "/api/products/" + productId + "/seller-info";
+            @SuppressWarnings("unchecked")
+            Map<String, String> result = restTemplate.getForObject(url, Map.class);
+            if (result != null) {
+                String email = result.get("sellerEmail");
+                return (email != null && !email.isEmpty()) ? email : null;
+            }
+        } catch (Exception e) {
+            log.warn("Could not fetch sellerEmail for product {}: {}", productId, e.getMessage());
+        }
+        return null;
+    }
+
     private void checkInventoryStock(List<CartItem> cartItems) {
         for (CartItem item : cartItems) {
             String url = inventoryServiceUrl + "/api/inventory/" + item.getProductId();
@@ -139,20 +161,18 @@ public class OrderService {
                 if (inventory == null) {
                     throw new InsufficientStockException("Inventory not found for product: " + item.getProductId());
                 }
-                // Tonoy's InventoryResponse uses 'quantity'; also check 'stock' and 'availableQuantity' for safety
-                Integer stock = inventory.get("stock") != null
-                        ? (Integer) inventory.get("stock")
+                Object rawStock = inventory.get("stock") != null
+                        ? inventory.get("stock")
                         : inventory.get("availableQuantity") != null
-                            ? (Integer) inventory.get("availableQuantity")
-                            : (Integer) inventory.get("quantity");
+                            ? inventory.get("availableQuantity")
+                            : inventory.get("quantity");
+                Integer stock = rawStock != null ? ((Number) rawStock).intValue() : null;
                 if (stock == null || stock < item.getQuantity()) {
                     throw new InsufficientStockException(
                             "Insufficient stock for product ID " + item.getProductId() +
                             ". Available: " + (stock == null ? 0 : stock) +
                             ", Requested: " + item.getQuantity());
                 }
-                log.info("Stock OK for product {}: available={}, requested={}",
-                        item.getProductId(), stock, item.getQuantity());
             } catch (InsufficientStockException e) {
                 throw e;
             } catch (Exception e) {
@@ -163,20 +183,14 @@ public class OrderService {
         }
     }
 
-    /**
-     * Deduct stock by calling PUT /api/inventory/{productId}/reduce?quantity={amount}
-     * on Sajib's inventory-service.
-     */
     private void deductInventoryStock(List<CartItem> cartItems) {
         for (CartItem item : cartItems) {
             String url = inventoryServiceUrl + "/api/inventory/" + item.getProductId()
                     + "/reduce?quantity=" + item.getQuantity();
             try {
                 restTemplate.put(url, null);
-                log.info("Stock deducted for product {}: quantity={}", item.getProductId(), item.getQuantity());
             } catch (Exception e) {
                 log.error("Failed to deduct stock for product {}: {}", item.getProductId(), e.getMessage());
-                // Log but don't fail — order is already saved; a retry/saga can handle this
             }
         }
     }

@@ -2,6 +2,7 @@ package com.Haat_Bazar.order_service.controller;
 
 import com.Haat_Bazar.order_service.dto.CheckoutRequest;
 import com.Haat_Bazar.order_service.dto.OrderResponse;
+import com.Haat_Bazar.order_service.dto.SellerSalesResponse;
 import com.Haat_Bazar.order_service.model.OrderStatus;
 import com.Haat_Bazar.order_service.service.OrderService;
 import jakarta.validation.Valid;
@@ -9,6 +10,8 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+
+import java.security.Principal;
 
 import java.util.List;
 
@@ -48,5 +51,11 @@ public class OrderController {
     public ResponseEntity<Void> markPaid(@PathVariable Long orderId) {
         orderService.markPaid(orderId);
         return ResponseEntity.ok().build();
+    }
+
+    // Returns sales data for the currently authenticated seller
+    @GetMapping("/my-sales")
+    public ResponseEntity<SellerSalesResponse> getMySales(Principal principal) {
+        return ResponseEntity.ok(orderService.getMySales(principal.getName()));
     }
 }
